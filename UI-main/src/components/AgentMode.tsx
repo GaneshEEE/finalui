@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, X, Send, Download, RotateCcw, FileText, Brain, CheckCircle, Loader2, MessageSquare, Plus, ChevronDown, TrendingUp, TestTube, Video } from 'lucide-react';
+import { Zap, X, Send, Download, RotateCcw, FileText, Brain, CheckCircle, Loader2, Plus, ChevronDown, TrendingUp, TestTube } from 'lucide-react';
 import type { AppMode } from '../App';
-import { apiService, analyzeGoal, getPagesWithType, PageWithType } from '../services/api';
+import { apiService, getPagesWithType, PageWithType } from '../services/api';
 import { getConfluenceSpaceAndPageFromUrl } from '../utils/urlUtils';
-import { formatAIPoweredSearchOutput, formatCodeAssistantOutput, formatTestSupportOutput, formatImpactAnalyzerOutput, formatImageInsightsOutput, formatVideoSummarizerOutput } from '../utils/toolOutputFormatters';
+import { formatAIPoweredSearchOutput, formatCodeAssistantOutput, formatImageInsightsOutput, formatVideoSummarizerOutput } from '../utils/toolOutputFormatters';
 import VoiceRecorder from './VoiceRecorder';
 
 interface AgentModeProps {
@@ -23,44 +23,39 @@ interface PlanStep {
 interface OutputTab {
   id: string;
   label: string;
-  icon: React.ComponentType<any>;
+  icon: React.ComponentType<{ className?: string }>;
   content: string;
 }
 
-// Add helper to determine intent and content type
-const determineToolByIntentAndContent = async (goal: string, space: string, page: string) => {
-  // Heuristic intent detection
-  const lowerGoal = goal.toLowerCase();
-  // Fallback to 'text' content type (no backend support for content type detection)
-  let contentType = 'text';
-  // Intent-based routing
-  if (/impact|change|difference|diff/.test(lowerGoal)) return 'impact_analyzer';
-  if (/test|qa|test case|unit test/.test(lowerGoal)) return 'test_support';
-  if (/convert|debug|refactor|fix|bug|error|optimize|performance|documentation|docs|comment|dead code|unused|logging|log/.test(lowerGoal)) return 'code_assistant';
-  if (/video|summarize.*video|transcribe|video.*summarize/.test(lowerGoal)) return 'video_summarizer';
-  if (/image|chart|diagram|visual|image.*summarize|summarize.*image/.test(lowerGoal)) return 'image_insights';
-  if (/summarize|summary/.test(lowerGoal)) return 'ai_powered_search';
-  // Default
-  return 'ai_powered_search';
-};
 
-// Helper for Code Assistant AI actions (copied from CodeAssistant.tsx)
-const codeAiActionPromptMap = (code: string): { [key: string]: string } => ({
-  "Summarize Code": `Summarize the following code in clear and concise language:\n\n${code}`,
-  "Optimize Performance": `Optimize the following code for performance without changing its functionality, return only the updated code:\n\n${code}`,
-  "Generate Documentation": `Generate inline documentation and function-level comments for the following code, return only the updated code by commenting the each line of the code.:\n\n${code}`,
-  "Refactor Structure": `Refactor the following code to improve structure, readability, and modularity, return only the updated code:\n\n${code}`,
-  "Identify dead code": `Analyze the following code for any unsued code or dead code, return only the updated code by removing the dead code:\n\n${code}`,
-  "Add Logging Statements": `Add appropriate logging statements to the following code for better traceability and debugging. Return only the updated code:\n\n${code}`,
-});
 
 // Helper to split user input into actionable instructions
 function splitInstructions(input: string): string[] {
-  // Split on common instruction separators
-  return input
+  // Split on common instruction separators, but be more careful about preserving context
+  const instructions = input
     .split(/\band\b|\bthen\b|\n|\r|\r\n|\.|;|,|\|\||\|\s/i)
     .map(instr => instr.trim())
     .filter(instr => instr.length > 0 && instr.length > 3); // Filter out very short fragments
+  
+  // If we only have one instruction, don't split it further
+  if (instructions.length === 1) {
+    return instructions;
+  }
+  
+  // For multiple instructions, try to preserve page-specific context
+  const refinedInstructions: string[] = [];
+  
+  for (const instruction of instructions) {
+    // If instruction mentions specific page names, keep it as is
+    if (/page|image|code|video|text/i.test(instruction)) {
+      refinedInstructions.push(instruction);
+    } else {
+      // For generic instructions, keep them as is
+      refinedInstructions.push(instruction);
+    }
+  }
+  
+  return refinedInstructions;
 }
 
 // Helper to split a single instruction with multiple related actions (e.g., 'optimize and convert')
@@ -87,100 +82,14 @@ interface HistoryEntry {
   selectedPages: string[];
 }
 
-// Add helper to render Impact Analyzer output in the reference image style
-interface MetricsType {
-  linesAdded?: number;
-  linesRemoved?: number;
-  filesChanged?: number;
-  percentageChanged?: number;
-}
-function ImpactMetricsAndRisk({ metrics, riskScore, riskLevel }: { metrics: MetricsType, riskScore: number, riskLevel: string }) {
-  const getRiskColor = (level: string) => {
-    switch (level) {
-      case 'low': return 'text-green-700 bg-green-100/80 backdrop-blur-sm border-green-200/50';
-      case 'medium': return 'text-yellow-700 bg-yellow-100/80 backdrop-blur-sm border-yellow-200/50';
-      case 'high': return 'text-red-700 bg-red-100/80 backdrop-blur-sm border-red-200/50';
-      default: return 'text-gray-700 bg-gray-100/80 backdrop-blur-sm border-gray-200/50';
-    }
-  };
-  const getRiskIcon = (level: string) => {
-    switch (level) {
-      case 'low': return <span className="mr-2">🟢</span>;
-      case 'medium': return <span className="mr-2">🟡</span>;
-      case 'high': return <span className="mr-2">⚠️</span>;
-      default: return <span className="mr-2">❔</span>;
-    }
-  };
-  return (
-    <div>
-      <div className="mt-2 space-y-3">
-        <h4 className="font-semibold text-gray-800">Change Metrics</h4>
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="bg-green-100/80 backdrop-blur-sm p-2 rounded text-center border border-white/20">
-            <div className="font-semibold text-green-800">+{metrics?.linesAdded ?? 0}</div>
-            <div className="text-green-600 text-xs">Added</div>
-          </div>
-          <div className="bg-red-100/80 backdrop-blur-sm p-2 rounded text-center border border-white/20">
-            <div className="font-semibold text-red-800">-{metrics?.linesRemoved ?? 0}</div>
-            <div className="text-red-600 text-xs">Removed</div>
-          </div>
-          <div className="bg-blue-100/80 backdrop-blur-sm p-2 rounded text-center border border-white/20">
-            <div className="font-semibold text-blue-800">{metrics?.filesChanged ?? 1}</div>
-            <div className="text-blue-600 text-xs">Files</div>
-          </div>
-          <div className="bg-purple-100/80 backdrop-blur-sm p-2 rounded text-center border border-white/20">
-            <div className="font-semibold text-purple-800">{metrics?.percentageChanged ?? 0}%</div>
-            <div className="text-purple-600 text-xs">Changed</div>
-          </div>
-        </div>
-      </div>
-      <div className="mt-6">
-        <h4 className="font-semibold text-gray-800 mb-2">Risk Assessment</h4>
-        <div className={`p-3 rounded-lg flex items-center space-x-2 border ${getRiskColor(riskLevel)}`}>
-          {getRiskIcon(riskLevel)}
-          <div>
-            <div className="font-semibold capitalize">{riskLevel} Risk</div>
-            <div className="text-sm">Score: {riskScore}/10</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
-// Add helper to render Test Support Tool output in the same style as Tool Mode
-function TestStrategyOutput({ strategy }: { strategy: string }) {
-  return (
-    <div className="bg-white/70 backdrop-blur-sm rounded-lg p-4 border border-white/20 prose prose-sm max-w-none">
-      {strategy.split('\n').map((line: string, index: number) => {
-        if (line.startsWith('### ')) {
-          return <h3 key={index} className="text-lg font-bold text-gray-800 mt-4 mb-2">{line.substring(4)}</h3>;
-        } else if (line.startsWith('## ')) {
-          return <h2 key={index} className="text-xl font-bold text-gray-800 mt-6 mb-3">{line.substring(3)}</h2>;
-        } else if (line.startsWith('# ')) {
-          return <h1 key={index} className="text-2xl font-bold text-gray-800 mt-8 mb-4">{line.substring(2)}</h1>;
-        } else if (line.startsWith('- **')) {
-          const match = line.match(/- \*\*(.*?)\*\*: (.*)/);
-          if (match) {
-            return <p key={index} className="mb-2"><strong>{match[1]}:</strong> {match[2]}</p>;
-          }
-        } else if (line.startsWith('- ')) {
-          return <p key={index} className="mb-1 ml-4">• {line.substring(2)}</p>;
-        } else if (line.trim()) {
-          return <p key={index} className="mb-2 text-gray-700">{line}</p>;
-        }
-        return <br key={index} />;
-      })}
-    </div>
-  );
-}
 
 const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceKey, isSpaceAutoConnected }) => {
   const [goal, setGoal] = useState('');
   const [isPlanning, setIsPlanning] = useState(false);
-  const [isExecuting, setIsExecuting] = useState(false);
+  const [isExecuting] = useState(false);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
-  const [currentStep, setCurrentStep] = useState(0);
+  const [, setCurrentStep] = useState(0);
   const [activeTab, setActiveTab] = useState('answer');
   const [followUpQuestion, setFollowUpQuestion] = useState('');
   const [showFollowUp, setShowFollowUp] = useState(false);
@@ -203,9 +112,6 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
-
-  // Page search state
-  const [pageSearchTerm, setPageSearchTerm] = useState('');
 
   // Auto-detect and auto-select space and page if only one exists, or from URL if provided
   useEffect(() => {
@@ -232,7 +138,7 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
             setSelectedPages([pagesResult.pages[0]]);
           }
         }
-      } catch (err) {
+      } catch {
         setError('Failed to auto-detect Confluence space and page.');
       }
     };
@@ -253,7 +159,7 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
           } else if (result.pages.length === 1) {
             setSelectedPages([result.pages[0]]);
           }
-        } catch (err) {
+        } catch {
           setError('Failed to load pages.');
         }
       };
@@ -268,7 +174,7 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
         try {
           const result = await getPagesWithType(selectedSpace);
           setPageTypes(result.pages);
-        } catch (err) {
+        } catch {
           // fallback: just set empty
           setPageTypes([]);
         }
@@ -308,12 +214,11 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
     setProgressPercent(0);
     setCurrentHistoryId(null);
     setShowHistory(false);
-    let reasoningLines: string[] = [];
     let impactAnalyzerResult: React.ReactNode | null = null;
     let testStrategyResult: React.ReactNode | null = null;
-    let toolsTriggered: string[] = [];
-    let whyUsed: string[] = [];
-    let howDerived: string[] = [];
+    const toolsTriggered: string[] = [];
+    const whyUsed: string[] = [];
+    const howDerived: string[] = [];
     try {
       setPlanSteps((steps) => steps.map((s) => s.id === 1 ? { ...s, status: 'running' } : s));
       setCurrentStep(0);
@@ -335,18 +240,18 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
           tools.push('video_summarizer');
         }
         
-        // Detect image-related instructions
-        if (/image|chart|diagram|visual|image.*summarize|summarize.*image/.test(lowerInstruction)) {
+        // Detect image-related instructions (more specific)
+        if (/image|chart|diagram|visual|image.*summarize|summarize.*image|analyze.*image|image.*analyze/.test(lowerInstruction)) {
           tools.push('image_insights');
         }
         
-        // Detect code-related instructions
-        if (/convert|debug|refactor|fix|bug|error|optimize|performance|documentation|docs|comment|dead code|unused|logging|log|code/.test(lowerInstruction)) {
+        // Detect code-related instructions (more specific)
+        if (/convert.*language|language.*convert|debug|refactor|fix|bug|error|optimize|performance|documentation|docs|comment|dead code|unused|logging|log|code.*convert|convert.*code/.test(lowerInstruction)) {
           tools.push('code_assistant');
         }
         
-        // Detect text-related instructions
-        if (/text|summarize.*text|text.*summarize/.test(lowerInstruction)) {
+        // Detect text-related instructions (more specific)
+        if (/text|summarize.*text|text.*summarize|summarize.*page|page.*summarize|summarize/.test(lowerInstruction)) {
           tools.push('ai_powered_search');
         }
         
@@ -374,73 +279,116 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
         pageContentTypes.set(page, type);
       }
       
-      // Match instructions to pages based on content type and required tools
+      // Improved instruction-to-page matching algorithm
       const pageInstructions: { page: string, instruction: string, tool: string }[] = [];
       const usedInstructions = new Set<string>();
       
+      // First pass: Try to match instructions that explicitly mention page names
       for (const page of selectedPages) {
         const pageType = pageContentTypes.get(page) || 'text';
+        let matchedInstruction: string | null = null;
+        let matchedTool: string | null = null;
         
-        // Find the best matching instruction for this page
-        let bestMatch = { instruction: '', tool: 'ai_powered_search' };
-        let bestScore = -1;
-        
+        // Look for instructions that explicitly mention this page name
         for (const { instruction, tools } of instructionTools) {
-          // Skip if this instruction has already been used
-          if (usedInstructions.has(instruction)) continue;
-          
           const lowerInstruction = instruction.toLowerCase();
-          let score = 0;
+          const lowerPageName = page.toLowerCase();
           
-          // Score based on content type matching
-          if (pageType === 'video' && tools.includes('video_summarizer')) {
-            score += 100;
-          } else if (pageType === 'image' && tools.includes('image_insights')) {
-            score += 100;
-          } else if (pageType === 'code' && tools.includes('code_assistant')) {
-            score += 100;
-          } else if (pageType === 'text' && tools.includes('ai_powered_search')) {
-            score += 50;
-          }
-          
-          // Additional scoring based on instruction content
-          if (pageType === 'video' && /video|summarize.*video|transcribe/i.test(lowerInstruction)) {
-            score += 50;
-          } else if (pageType === 'image' && /image|chart|diagram|visual/i.test(lowerInstruction)) {
-            score += 50;
-          } else if (pageType === 'code' && /code|debug|refactor|optimize|performance/i.test(lowerInstruction)) {
-            score += 50;
-          } else if (pageType === 'text' && /summarize|analyze|text/i.test(lowerInstruction)) {
-            score += 25;
-          }
-          
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = { instruction, tool: tools[0] || 'ai_powered_search' };
-          }
-        }
-        
-        // If no good match found, use the first unused instruction
-        if (bestMatch.instruction === '') {
-          for (const { instruction, tools } of instructionTools) {
-            if (!usedInstructions.has(instruction)) {
-              bestMatch = { instruction, tool: tools[0] || 'ai_powered_search' };
-              break;
+          // Check if instruction mentions this specific page
+          if (lowerInstruction.includes(lowerPageName) || 
+              lowerInstruction.includes(lowerPageName.replace(/\s+/g, '_')) ||
+              lowerInstruction.includes(lowerPageName.replace(/\s+/g, '-'))) {
+            
+            // Find the best tool for this instruction and page type
+            let bestTool = 'ai_powered_search';
+            
+            if (pageType === 'video' && tools.includes('video_summarizer')) {
+              bestTool = 'video_summarizer';
+            } else if (pageType === 'image' && tools.includes('image_insights')) {
+              bestTool = 'image_insights';
+            } else if (pageType === 'code' && tools.includes('code_assistant')) {
+              bestTool = 'code_assistant';
+            } else if (pageType === 'text' && tools.includes('ai_powered_search')) {
+              bestTool = 'ai_powered_search';
+            } else if (tools.length > 0) {
+              bestTool = tools[0];
             }
+            
+            matchedInstruction = instruction;
+            matchedTool = bestTool;
+            usedInstructions.add(instruction);
+            break;
           }
         }
         
-        // If still no instruction found, use the first instruction as fallback
-        if (bestMatch.instruction === '') {
-          bestMatch = { instruction: instructions[0], tool: 'ai_powered_search' };
+        // If no explicit page name match, try content type matching
+        if (!matchedInstruction) {
+          for (const { instruction, tools } of instructionTools) {
+            if (usedInstructions.has(instruction)) continue;
+            
+            const lowerInstruction = instruction.toLowerCase();
+            let bestTool = 'ai_powered_search';
+            
+            // Match based on content type and instruction keywords
+            if (pageType === 'video' && tools.includes('video_summarizer')) {
+              bestTool = 'video_summarizer';
+            } else if (pageType === 'image' && tools.includes('image_insights')) {
+              bestTool = 'image_insights';
+            } else if (pageType === 'code' && tools.includes('code_assistant')) {
+              bestTool = 'code_assistant';
+            } else if (pageType === 'text' && tools.includes('ai_powered_search')) {
+              bestTool = 'ai_powered_search';
+            } else if (tools.length > 0) {
+              bestTool = tools[0];
+            }
+            
+            // Additional keyword matching for better accuracy
+            if (pageType === 'image' && /image|chart|diagram|visual/.test(lowerInstruction)) {
+              bestTool = 'image_insights';
+            } else if (pageType === 'code' && /convert|debug|refactor|fix|bug|error|optimize|performance|documentation|docs|comment|dead code|unused|logging|log|code/.test(lowerInstruction)) {
+              bestTool = 'code_assistant';
+            } else if (pageType === 'video' && /video|summarize.*video|transcribe/.test(lowerInstruction)) {
+              bestTool = 'video_summarizer';
+            }
+            
+            matchedInstruction = instruction;
+            matchedTool = bestTool;
+            usedInstructions.add(instruction);
+            break;
+          }
         }
         
-        usedInstructions.add(bestMatch.instruction);
-        pageInstructions.push({ page, instruction: bestMatch.instruction, tool: bestMatch.tool });
+        // If still no match, use the first available instruction
+        if (!matchedInstruction) {
+          for (const { instruction, tools } of instructionTools) {
+            if (usedInstructions.has(instruction)) continue;
+            
+            let bestTool = 'ai_powered_search';
+            if (tools.length > 0) {
+              bestTool = tools[0];
+            }
+            
+            matchedInstruction = instruction;
+            matchedTool = bestTool;
+            usedInstructions.add(instruction);
+            break;
+          }
+        }
+        
+        // If no instruction available, use a default one
+        if (!matchedInstruction) {
+          matchedInstruction = instructions[0] || 'Analyze this content';
+          matchedTool = 'ai_powered_search';
+        }
+        
+        pageInstructions.push({ 
+          page, 
+          instruction: matchedInstruction, 
+          tool: matchedTool || 'ai_powered_search'
+        });
       }
       
       for (const { page, instruction, tool } of pageInstructions) {
-        const type = pageContentTypes.get(page) || 'text';
         let outputs: string[] = [];
         let formattedOutput = '';
         
@@ -544,11 +492,11 @@ const AgentMode: React.FC<AgentModeProps> = ({ onClose, onModeSelect, autoSpaceK
           };
           
           // Format output using the same structure as Tool Mode
-          let summaryText = videoContent.summary || 'No summary available.';
-          let quotesText = videoContent.quotes && videoContent.quotes.length > 0 
+          const summaryText = videoContent.summary || 'No summary available.';
+          const quotesText = videoContent.quotes && videoContent.quotes.length > 0 
             ? `\n\nKey Quotes:\n${videoContent.quotes.map(quote => `- "${quote}"`).join('\n')}`
             : '';
-          let timestampsText = videoContent.timestamps && videoContent.timestamps.length > 0
+          const timestampsText = videoContent.timestamps && videoContent.timestamps.length > 0
             ? `\n\nTimestamps:\n${videoContent.timestamps.map(ts => `- ${ts}`).join('\n')}`
             : '';
           
@@ -769,13 +717,17 @@ The AI assistant analyzed your request and automatically selected the most appro
       
       // Add to history
       addToHistory(goal, tabs);
-    } catch (err: any) {
-      setError(err.message || 'An error occurred during orchestration.');
+    } catch {
+      setError('An error occurred during orchestration.');
     }
-         setIsPlanning(false);
-     setCurrentStep(2);
-     setProgressPercent(100);
-   };
+    setIsPlanning(false);
+    setCurrentStep(2);
+    setProgressPercent(100);
+  };
+
+
+
+
 
   const handleFollowUp = async () => {
     if (!followUpQuestion.trim() || !selectedSpace || selectedPages.length === 0) return;
@@ -791,7 +743,7 @@ The AI assistant analyzed your request and automatically selected the most appro
         tab.id === 'qa' ? { ...tab, content: updatedQA } : tab
       ));
       setFollowUpQuestion('');
-    } catch (err) {
+    } catch {
       setError('Failed to get follow-up answer.');
     }
   };
@@ -823,13 +775,13 @@ ${planSteps.map(step => `${step.id}. ${step.title} - ${step.status}`).join('\n')
 
 ${outputTabs.map(tab => {
   if (tab.id === 'per-page-results' && tab.results) {
-    return `### ${tab.label}\n\n${tab.results.map((result: any) => {
+    return `### ${tab.label}\n\n${tab.results.map((result: Record<string, unknown>) => {
       if ('impactAnalyzerResult' in result) {
         return '**Impact Analyzer Results**\n[Complex output - see UI for details]';
       } else if ('testStrategyResult' in result) {
         return '**Test Strategy Results**\n[Complex output - see UI for details]';
       } else if (result.page) {
-        return `**${result.page}**\n${result.results?.map((r: any) => `- ${r.instruction}: ${r.formattedOutput.substring(0, 200)}...`).join('\n') || 'No results'}`;
+        return `**${result.page}**\n${(result.results as Array<Record<string, unknown>>)?.map((r: Record<string, unknown>) => `- ${r.instruction}: ${(r.formattedOutput as string).substring(0, 200)}...`).join('\n') || 'No results'}`;
       }
       return '';
     }).filter(Boolean).join('\n\n')}`;
@@ -971,39 +923,24 @@ ${isHistoryExport ? `*Historical Entry ID: ${currentHistoryId}*` : ''}`;
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Select Pages to Analyze
                   </label>
-                  {/* Page Search Input */}
-                  <div className="mb-3">
-                    <input
-                      type="text"
-                      value={pageSearchTerm}
-                      onChange={(e) => setPageSearchTerm(e.target.value)}
-                      placeholder="Search pages..."
-                      className="w-full p-2 border border-white/30 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white/70 backdrop-blur-sm text-sm"
-                    />
-                  </div>
                   <div className="space-y-2 max-h-40 overflow-y-auto border border-white/30 rounded-lg p-2 bg-white/50 backdrop-blur-sm">
-                    {pages
-                      .filter(page => 
-                        pageSearchTerm === '' || 
-                        page.toLowerCase().includes(pageSearchTerm.toLowerCase())
-                      )
-                      .map(page => (
-                        <label key={page} className="flex items-center space-x-2 p-2 hover:bg-white/30 rounded cursor-pointer backdrop-blur-sm">
-                          <input
-                            type="checkbox"
-                            checked={selectedPages.includes(page)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedPages([...selectedPages, page]);
-                              } else {
-                                setSelectedPages(selectedPages.filter(p => p !== page));
-                              }
-                            }}
-                            className="rounded border-gray-300 text-orange-500 focus:ring-orange-500"
-                          />
-                          <span className="text-sm text-gray-700">{page}</span>
-                        </label>
-                      ))}
+                    {pages.map(page => (
+                      <label key={page} className="flex items-center space-x-2 p-2 hover:bg-white/30 rounded cursor-pointer backdrop-blur-sm">
+                        <input
+                          type="checkbox"
+                          checked={selectedPages.includes(page)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedPages([...selectedPages, page]);
+                            } else {
+                              setSelectedPages(selectedPages.filter(p => p !== page));
+                            }
+                          }}
+                          className="rounded border-gray-300 text-orange-500 focus:ring-orange-500"
+                        />
+                        <span className="text-sm text-gray-700">{page}</span>
+                      </label>
+                    ))}
                   </div>
                   <div className="flex items-center space-x-2 mb-2 mt-2">
                     <input
@@ -1029,22 +966,28 @@ ${isHistoryExport ? `*Historical Entry ID: ${currentHistoryId}*` : ''}`;
                 <h3 className="text-2xl font-bold text-gray-800 mb-6">What do you want the assistant to help you achieve?</h3>
                 <div className="relative">
                   {/* Combined Voice Recorder and Textarea for goal input */}
-                  <div className="mb-4">
-                    <VoiceRecorder
-                      value={goal}
-                      onChange={setGoal}
-                      onConfirm={setGoal}
-                      inputPlaceholder="Describe your goal in detail..."
-                      buttonClassName="bg-orange-500/90 text-white hover:bg-orange-600 border-orange-500"
-                    />
-                    <div className="flex justify-center mt-4">
+                  <div className="flex items-start space-x-2 mb-4">
+                    <div className="flex-1">
+                      <textarea
+                        value={goal}
+                        onChange={(e) => setGoal(e.target.value)}
+                        placeholder="Describe your goal in detail... (e.g., 'Help me analyze our documentation structure and recommend improvements for better user experience')"
+                        className="w-full p-4 border-2 border-orange-200/50 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 resize-none bg-white/70 backdrop-blur-sm text-lg"
+                        rows={4}
+                      />
+                    </div>
+                    <div className="flex flex-col space-y-2">
+                      <VoiceRecorder
+                        onConfirm={t => setGoal(t)}
+                        inputPlaceholder="Speak your goal..."
+                        buttonClassName="bg-orange-500/90 text-white hover:bg-orange-600 border-orange-500"
+                      />
                       <button
                         onClick={handleGoalSubmit}
                         disabled={!goal.trim() || !selectedSpace || selectedPages.length === 0}
-                        className="bg-orange-500/90 backdrop-blur-sm text-white px-6 py-3 rounded-lg hover:bg-orange-600 disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors border border-white/10"
+                        className="bg-orange-500/90 backdrop-blur-sm text-white p-3 rounded-lg hover:bg-orange-600 disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center space-x-2 transition-colors border border-white/10"
                       >
                         <Send className="w-5 h-5" />
-                        <span>Submit Goal</span>
                       </button>
                     </div>
                   </div>
@@ -1199,7 +1142,7 @@ ${isHistoryExport ? `*Historical Entry ID: ${currentHistoryId}*` : ''}`;
                   <div className="bg-white/60 backdrop-blur-xl rounded-xl p-4 border border-white/20 shadow-lg">
                     <h3 className="font-semibold text-gray-800 mb-4">Live Progress Log</h3>
                     <div className="space-y-4">
-                      {planSteps.map((step, index) => (
+                      {planSteps.map((step) => (
                         <div key={step.id} className="flex items-start space-x-3">
                           <div className="flex-shrink-0 mt-1">
                             {step.status === 'completed' ? (
